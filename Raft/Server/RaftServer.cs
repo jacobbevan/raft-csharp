@@ -26,7 +26,7 @@ namespace Raft.Server
 
         private int _currentTerm;
         private string _votedFor;
-        private Log _log;
+        private CommandLog _log;
         private IAuditLog _auditLog;
         private IPlanner _planner;
         private int _votesReceived = 0;
