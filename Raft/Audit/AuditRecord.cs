@@ -41,7 +41,6 @@ namespace Raft.Audit
             State = state;
 
             Log.Write(GetLogEventLevel(type), "Raft audit: {@item}", this);
-            //Console.WriteLine($"Time: {When:HH:mm:ss:FFF} Action: {Type} Id: {Candidate} State: {State} Term: {Term} Info: {extraInfo}");
         }
 
         private LogEventLevel GetLogEventLevel(AuditRecordType recordType)
@@ -58,6 +57,7 @@ namespace Raft.Audit
                 case AuditRecordType.RecVoteRequest:
                 case AuditRecordType.RejectAppendEntries:
                 case AuditRecordType.RejectVoteRequest:
+                case AuditRecordType.AcceptVoteRequest:
                     return LogEventLevel.Information;
                 case AuditRecordType.SendHeartbeat:
                 case AuditRecordType.RecAppendEntries:

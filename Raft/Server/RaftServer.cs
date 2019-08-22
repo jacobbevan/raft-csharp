@@ -1,9 +1,11 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Raft.Audit;
 using Raft.Messages;
+using Serilog;
 using static Raft.Audit.AuditRecord;
 
 namespace Raft.Server
@@ -54,6 +56,11 @@ namespace Raft.Server
             {
                 _auditLog.LogRecord(new AuditRecord(AuditRecordType.RecAppendEntries, Id, _state, _currentTerm));
 
+                //this instance considers sender's Term to be stale - reject request and complete.
+
+                //NOT IMPLEMENTED return false if log doesn't contain an entry. 
+                //NOT IMPLEMENTED if conflict, delete existing entry
+
                 if(_currentTerm > request.Term) {
                     _auditLog.LogRecord(new AuditRecord(AuditRecordType.RejectAppendEntries, Id, _state,_currentTerm));
                     return new AppendEntriesResult {
@@ -62,11 +69,13 @@ namespace Raft.Server
                     };
                 }
 
+                //we should become a follower, irrespective of current state
+                BecomeFollower(request.Term);
+
+                //TODO delete
+                /*
                 if(!BecomeFollowerIfTermIsStale(request.Term))
                 {
-                    //TODO rewrite so there is a general mechanism for cancelling /disregarding scheduled actions in previous states
-                    //TODO return false if log doesn't contain an entry...
-                    //TODO if conflict, delete existing entry
                     switch(_state)
                     {
                         case  RaftServerState.Candidate:
@@ -79,6 +88,7 @@ namespace Raft.Server
 
 
                 }
+                */
 
                 return new AppendEntriesResult {
                     Term = _currentTerm,
@@ -202,7 +212,6 @@ namespace Raft.Server
                     )
                 );
 
-                //TODO this should probably be a service
                 await _planner.HeatbeatDelay();
             }
         }
@@ -216,15 +225,39 @@ namespace Raft.Server
             }
         }
 
-        private void BecomeFollower(int term)
+        private void ResetVotingRecord()
+        {
+            _votedFor = null;
+            _votesReceived = 0;
+        }
+
+        private void UpdateTerm(int term)
+        {
+            if(term < _currentTerm)
+            {
+                var ex = new Exception($"Requested to become a Follower with term {term} when term is {_currentTerm}");
+                Log.Fatal(ex, "Requested to become a Follower with term {@t1} when term is {@t2}",  term, _currentTerm);
+                throw ex;
+            }
+            
+            if(term > _currentTerm)
+            {
+                ResetVotingRecord();
+            }
+            _currentTerm = term;
+
+        }
+        public void BecomeFollower(int term)
         {
             lock(_lock)
             {
-                _votedFor = null;
-                _currentTerm = term;
-                _state = RaftServerState.Follower;
-                _votesReceived = 0;
-                _auditLog.LogRecord(new AuditRecord(AuditRecordType.BecomeFollower, Id, _state, _currentTerm));
+                UpdateTerm(term);
+
+                if(_state != RaftServerState.Follower)
+                {
+                    _state = RaftServerState.Follower;
+                    _auditLog.LogRecord(new AuditRecord(AuditRecordType.BecomeFollower, Id, _state, _currentTerm));
+                }
                 Task.Run(ResetFollowerTimeOut);
             }
         }

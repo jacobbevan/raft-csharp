@@ -17,7 +17,7 @@ namespace Tests
         public void Setup()
         {
            Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.Debug()
+                .MinimumLevel.Information()
                 .WriteTo.Console()
                 .WriteTo.File("testLog.log")
                 .CreateLogger();            
@@ -79,10 +79,10 @@ namespace Tests
             }
 
             System.Threading.Thread.Sleep(5000);
-            //partitionConfig.Partition();
-            //System.Threading.Thread.Sleep(10000);
-            //partitionConfig.Heal();
-            //System.Threading.Thread.Sleep(10000);
+            partitionConfig.Partition();
+            System.Threading.Thread.Sleep(5000);
+            partitionConfig.Heal();
+            System.Threading.Thread.Sleep(5000);
         }
     }
 }
