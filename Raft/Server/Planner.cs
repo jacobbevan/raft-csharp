@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Raft.Server
@@ -6,15 +7,18 @@ namespace Raft.Server
     public sealed class Planner : IPlanner
     {
         private Random _rand = new Random();
-        private int _electionTimerMeanMs = 500;
-        private int _electionTimerRangeMs = 200;
-        private int _heartBeatIntervalMs = 200;
+        private int _electionTimerMeanMs;
+        private int _electionTimerRangeMs;
+        private int _heartBeatIntervalMs;
 
-        public Planner(int electionTimerMeanMs, int electionTimerRangeMs, int heartBeatIntervalMs)
+        private int _retryIntervalMs;
+
+        public Planner(int electionTimerMeanMs, int electionTimerRangeMs, int heartBeatIntervalMs, int retryIntervalMs)
         {
             _electionTimerMeanMs = electionTimerMeanMs;
             _electionTimerRangeMs = electionTimerRangeMs;
             _heartBeatIntervalMs = heartBeatIntervalMs;
+            _retryIntervalMs = 50;
         }
 
         public Task ElectionDelay()
@@ -25,6 +29,11 @@ namespace Raft.Server
         public Task HeatbeatDelay()
         {
             return Task.Delay(_heartBeatIntervalMs / 2);
+        }
+
+        public Task RetryDelay()
+        {
+            return Task.Delay(_retryIntervalMs);
         }
     }
 }

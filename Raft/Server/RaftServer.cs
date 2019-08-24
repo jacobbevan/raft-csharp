@@ -10,7 +10,7 @@ using static Raft.Audit.AuditRecord;
 
 namespace Raft.Server
 {
-    public class RaftServer : IServer
+    public class RaftServer : IServer, IDisposable
     {
 
 
@@ -26,16 +26,17 @@ namespace Raft.Server
         private object _lock = new object();
         private volatile RaftServerState _state = RaftServerState.Follower;
 
-        private int _currentTerm;
+        private volatile int _currentTerm;
         private string _votedFor;
         private CommandLog _log;
         private IAuditLog _auditLog;
         private IPlanner _planner;
         private int _votesReceived = 0;
         private IList<IServerProxy> _servers;
-        private CancellationTokenSource _followerTimeOutTcs; 
+        private CancellationTokenSource _taskCancellation = new CancellationTokenSource(); 
         public string Id { get; private set; }
         public RaftServerState State {get {return _state;}}
+        public int  CurrentTerm {get {return _currentTerm;}}
         public RaftServer(string id, IAuditLog auditLog, IPlanner planner)
         {
             Id = id;
@@ -71,24 +72,6 @@ namespace Raft.Server
 
                 //we should become a follower, irrespective of current state
                 BecomeFollower(request.Term);
-
-                //TODO delete
-                /*
-                if(!BecomeFollowerIfTermIsStale(request.Term))
-                {
-                    switch(_state)
-                    {
-                        case  RaftServerState.Candidate:
-                            BecomeFollower(request.Term);
-                            break;
-                        case RaftServerState.Follower:
-                            Task.Run(ResetFollowerTimeOut);
-                            break;
-                    }
-
-
-                }
-                */
 
                 return new AppendEntriesResult {
                     Term = _currentTerm,
@@ -163,23 +146,21 @@ namespace Raft.Server
 
         private bool BecomeFollowerIfTermIsStale(int termToCompare)
         {
-            lock(_lock)
+            if(StaleTermCheck(termToCompare))
             {
-                if(StaleTermCheck(termToCompare))
-                {
-                    BecomeFollower(termToCompare);
-                    return true;
-                }
-                return false;
+                BecomeFollower(termToCompare);
+                return true;
             }
+            return false;
         }
 
         private void BecomeLeader()
         {
             lock(_lock)
             {
-                _auditLog.LogRecord(new AuditRecord(AuditRecordType.BecomeLeader, Id, _state, _currentTerm));
+                CancelScheduledEvents();
                 _state = RaftServerState.Leader;
+                _auditLog.LogRecord(new AuditRecord(AuditRecordType.BecomeLeader, Id, _state, _currentTerm));
                 Task.Run(SendHeartbeat);
             }
         }
@@ -187,28 +168,25 @@ namespace Raft.Server
         private async Task SendHeartbeat()
         {
             List<IServerProxy> servers;
-
+            AppendEntriesCommand heartBeatCmd;
             lock(_lock)
             {
                 servers = new List<IServerProxy>(_servers);
+                heartBeatCmd = new AppendEntriesCommand
+                {
+                    Term = _currentTerm,
+                    LeaderId = Id
+                };
             }
 
             _auditLog.LogRecord(new AuditRecord(AuditRecordType.SendHeartbeat, Id, _state, _currentTerm));
-            var heartBeatCmd = new AppendEntriesCommand
-            {
-                Term = _currentTerm,
-                LeaderId = Id
-
-            };
 
             while(_state == RaftServerState.Leader)
             {
                 //TODO error handling, cancellation
                 var pendingRequests = new List<Task>(
                     servers.Select(
-                        s=>s.AppendEntries(heartBeatCmd).ContinueWith(
-                            t=>HandleHeartbeatResponse(t.Result)
-                        )
+                        s=>SendAppendEntriesReceiveAck(s, heartBeatCmd)
                     )
                 );
 
@@ -216,14 +194,22 @@ namespace Raft.Server
             }
         }
 
-        private void HandleHeartbeatResponse(AppendEntriesResult response)
+        private async Task SendAppendEntriesReceiveAck(IServerProxy server, AppendEntriesCommand cmd)
         {
-            lock(_lock)
+
+            try
             {
-                _auditLog.LogRecord(new AuditRecord(AuditRecordType.RecHeartbeatResponse, Id, _state, _currentTerm));
+                var response = await server.AppendEntries(cmd);
                 BecomeFollowerIfTermIsStale(response.Term);
             }
+            catch(Exception)
+            {
+                //TODO exception logging to separate channel
+                _auditLog.LogRecord(new AuditRecord(AuditRecordType.AppendEntriesRPCFailure, Id, _state, _currentTerm, $"RPC to: {server.Id}"));
+            }
         }
+
+
 
         private void ResetVotingRecord()
         {
@@ -247,89 +233,125 @@ namespace Raft.Server
             _currentTerm = term;
 
         }
-        public void BecomeFollower(int term)
+        public Task BecomeFollower(int term)
         {
             lock(_lock)
             {
+                CancelScheduledEvents();
                 UpdateTerm(term);
 
+                //Become follower can be called when we already are one (e.g. on receipt of a heartbeat)
                 if(_state != RaftServerState.Follower)
                 {
                     _state = RaftServerState.Follower;
                     _auditLog.LogRecord(new AuditRecord(AuditRecordType.BecomeFollower, Id, _state, _currentTerm));
                 }
-                Task.Run(ResetFollowerTimeOut);
+                return Task.Run(ScheduleFollowerTimeout);
             }
         }
 
-        private async Task ResetFollowerTimeOut()
+        private void CancelScheduledEvents()
         {
-            var tcs = new CancellationTokenSource();
-            var token = tcs.Token;
+            _taskCancellation.Cancel();
+            //do not call dispose: does not seem to be required, causes issues with other threads checking the token after disposal
+            _taskCancellation = new CancellationTokenSource();
+        }
 
-            //TODO this is not nice, fix it
-            
-            lock(_lock)
-            {
-                //TODO  error handling
-                if(_followerTimeOutTcs != null)
-                {
-                    //are both necessary?
-                    _followerTimeOutTcs.Cancel();
-                    _followerTimeOutTcs.Dispose();
-                }
-                _followerTimeOutTcs = tcs;
-            }
+        private async Task ScheduleFollowerTimeout()
+        {
+            var token = _taskCancellation.Token;
 
             await _planner.ElectionDelay();  
 
-            if(!token.IsCancellationRequested && _state == RaftServerState.Follower)
+            if(token.IsCancellationRequested)
+            {
+                Log.Debug("Election timeout cancelled for candidate {@}", Id);
+            }
+            else
             {
                 await BecomeCandidate();           
             }
         } 
 
+        private async Task RequestAndReceiveVote(IServerProxy server, CancellationToken token)
+        {
+            //retry indefinitely on exception (until term expires)
+            while(true)
+            {
+                try
+                {
+                    if(token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    var result = await server.RequestVote(
+                        new RequestVoteCommand {
+                            CandidateId = Id,
+                            CurrentTerm = _currentTerm 
+                        }
+                    );
+                    
+                    ReceiveVote(result);
+                    return;
+                }
+                catch(Exception)
+                {
+                    //TODO exception logging to separate channel
+                    _auditLog.LogRecord(new AuditRecord(AuditRecordType.RecVoteRPCFailure, Id, _state, _currentTerm, $"RPC to: {server.Id}"));
+                    await _planner.RetryDelay();
+                }                
+            }
+        }
+
         public async Task BecomeCandidate()
         {            
             _state = RaftServerState.Candidate;
-
             _auditLog.LogRecord(new AuditRecord(AuditRecordType.BecomeCandidate, Id, _state, _currentTerm));
+
             while(_state == RaftServerState.Candidate)
             {
-                _currentTerm++;
-                _votesReceived = 0;
-                _votedFor = null;
-                _auditLog.LogRecord(new AuditRecord(AuditRecordType.StartElection, Id, _state, _currentTerm));
+                lock(_lock)
+                {
+                    CancelScheduledEvents();
+                    _currentTerm++;
+                    _votesReceived = 0;
+                    _votedFor = null;
+                    _auditLog.LogRecord(new AuditRecord(AuditRecordType.StartElection, Id, _state, _currentTerm));
 
-                //vote for self
-                ReceiveVote(
-                    new RequestVoteResult {
-                        Term = _currentTerm,
-                        VoteGranted = true,
-                        VoterId = Id,
-                    }
+                    //vote for self
+                    ReceiveVote(
+                        new RequestVoteResult {
+                            Term = _currentTerm,
+                            VoteGranted = true,
+                            VoterId = Id,
+                        }
 
-                );
-                _votedFor  = Id;
+                    );
+                    _votedFor  = Id;
 
-                //TODO error handling, cancellation 
-                var pendingRequests = new List<Task>(
-                    _servers.Select(
-                        s=>s.RequestVote(
-                            new RequestVoteCommand {
-                                CandidateId = Id,
-                                CurrentTerm = _currentTerm 
-                            }
-                        ).ContinueWith(
-                            t=>ReceiveVote(t.Result)
+                    var token = _taskCancellation.Token;
+
+                    //TODO error handling, cancellation 
+                    var pendingRequests = new List<Task>(
+                        _servers.Select(
+                            s=>RequestAndReceiveVote(s, token)
                         )
-                    )
-                );
-
+                    );
+                }
                 //wait timeout period
                 await _planner.ElectionDelay();
 
                 //if we are still in candidate state, run another election
+                //no need to cancel inflight vote requests because increment to term means they will be ignored
+            }
+        }
+
+        public void Dispose()
+        {
+            lock(_lock)
+            {
+                CancelScheduledEvents();
             }
         }
     }

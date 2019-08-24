@@ -12,7 +12,7 @@ namespace Raft
         static void Main(string[] args)
         {
             var auditLog = new SimpleAuditLog();
-            var planner = new Planner(1000, 900, 200);
+            var planner = new Planner(1000, 900, 200, 50);
 
             var partitionConfig = new PartitionConfiguration(
                 new Dictionary<string,int> 

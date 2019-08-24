@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Moq;
 using NUnit.Framework;
 using Raft.Audit;
@@ -24,24 +26,53 @@ namespace Tests
         }
 
         [Test]
-        public void Test1()
+        public void become_follower_updates_term()
         {
-
             var audit = new Mock<IAuditLog>();
             var planner = new Mock<IPlanner>();
-            var server = new RaftServer("a", audit.Object, planner.Object);
-            Log.Logger.Information("hi mum");
-            System.Console.WriteLine("hi hi");
+            using(var server = new RaftServer("a", audit.Object, planner.Object))
+            {
+                server.BecomeFollower(2);
+                Assert.AreEqual(2, server.CurrentTerm);
+            }
+        }
 
+        [Test]
+        public void become_follower_with_term_reduction_is_fatal()
+        {
 
+            
+            var audit = new Mock<IAuditLog>();
+            var planner = new Mock<IPlanner>();
+            using(var server = new RaftServer("a", audit.Object, planner.Object))
+            {
+                server.BecomeFollower(2);
+                Assert.That(() => server.BecomeFollower(1), Throws.Exception);
+                
+            }
+        }
+
+        [Test]
+        public void become_follower_leads_to_become_candidate()
+        {
+
+            
+            var audit = new Mock<IAuditLog>();
+            var planner = new Mock<IPlanner>();
+            using(var server = new RaftServer("a", audit.Object, planner.Object))
+            {
+                var t = server.BecomeFollower(2);
+                t.Wait(2000);
+                Assert.AreEqual(1,1);                
+            }
         }
 
 
         [Test]
-        public void temporary_integration_test()
+        public void partition_integration_test()
         {
                         var auditLog = new SimpleAuditLog();
-            var planner = new Planner(1000, 900, 200);
+            var planner = new Planner(1000, 900, 200, 200);
 
             var partitionConfig = new PartitionConfiguration(
                 new Dictionary<string,int> 
@@ -50,10 +81,9 @@ namespace Tests
                     {"b",1},
                     {"c",1},
                     {"d",1},
-                    {"e",2},
+                    {"e",1},
                     {"f",2},
                     {"g",2},
-                    {"h",2},
                 },
                 false
             );
@@ -66,8 +96,6 @@ namespace Tests
                 new RaftServer("e", auditLog, planner),
                 new RaftServer("f", auditLog, planner),
                 new RaftServer("g", auditLog, planner),
-                new RaftServer("h", auditLog, planner),
-
             };
 
 

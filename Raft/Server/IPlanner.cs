@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Raft.Server
@@ -6,5 +7,7 @@ namespace Raft.Server
     {
         Task HeatbeatDelay();
         Task ElectionDelay();
+
+        Task RetryDelay();
     }
 }

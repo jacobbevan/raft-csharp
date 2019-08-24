@@ -21,7 +21,9 @@ namespace Raft.Audit
             RejectVoteRequest,
             RecHeartbeatResponse,
             RejectAppendEntries,
-            RecVoteRequest
+            RecVoteRequest,
+            RecVoteRPCFailure,
+            AppendEntriesRPCFailure
         }
         public string Id { get; set; }
         public RaftServerState State { get; set; }
@@ -48,6 +50,9 @@ namespace Raft.Audit
             
             switch(recordType)
             {
+                case AuditRecordType.RecVoteRPCFailure:
+                case AuditRecordType.AppendEntriesRPCFailure:
+                    return LogEventLevel.Error;
                 case AuditRecordType.DetectStaleTerm:
                     return LogEventLevel.Warning;
                 case AuditRecordType.BecomeCandidate:
